@@ -8,7 +8,9 @@ export default defineConfig(({ mode }) => {
   return {
     plugins: [react(), tailwindcss(), {
       name: 'worldscope-assistant',
-      configureServer(server) { server.middlewares.use('/api/assistant', (req, res) => { void handleAssistant(req, res, env) }) },
+      configureServer(server) {
+        server.middlewares.use('/api/assistant', (req, res) => { void handleAssistant(req, res, env) })
+      },
     }],
     build: { rolldownOptions: { output: { codeSplitting: { groups: [{ name: 'globe', test: /node_modules[\\/](three|d3|topojson)/ }] } } } },
   }

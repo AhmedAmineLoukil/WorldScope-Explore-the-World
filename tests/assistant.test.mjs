@@ -24,23 +24,23 @@ test('cross-origin requests cannot invoke the assistant', async () => {
   assert.equal((await request('POST', { messages: [{ role: 'user', content: 'Hi' }] }, {}, { origin: 'https://unrelated.example' })).status, 403);
 });
 test('status reports configuration without exposing credentials', async () => {
-  const result = await request('GET', null, { OPENAI_API_KEY: 'test-credential' });
+  const result = await request('GET', null, { GEMINI_API_KEY: 'test-credential' });
   assert.deepEqual(result.response, { mode: 'live' });
 });
 test('live adapter forwards history and extracts response text', async () => {
   const originalFetch = globalThis.fetch;
   let payload;
-  globalThis.fetch = async (_url, options) => { payload = JSON.parse(options.body); return { ok: true, json: async () => ({ output: [{ type: 'message', content: [{ type: 'output_text', text: 'Try Iceland for a hiking adventure.' }] }] }) }; };
+  globalThis.fetch = async (_url, options) => { payload = JSON.parse(options.body); return { ok: true, json: async () => ({ candidates: [{ content: { parts: [{ text: 'Try Iceland for a hiking adventure.' }] } }] }) }; };
   try {
     const messages = [{ role: 'user', content: 'Where should I hike?' }];
-    const result = await request('POST', { messages }, { OPENAI_API_KEY: 'test-credential', OPENAI_MODEL: 'configured-model' });
+    const result = await request('POST', { messages }, { GEMINI_API_KEY: 'test-credential', GEMINI_MODEL: 'configured-model' });
     assert.equal(result.response.mode, 'live'); assert.equal(result.response.reply, 'Try Iceland for a hiking adventure.');
-    assert.deepEqual(payload.input, messages); assert.equal(payload.store, false); assert.equal(payload.model, 'configured-model');
+    assert.deepEqual(payload.contents, [{ role: 'user', parts: [{ text: 'Where should I hike?' }] }]);
     assert.ok(!JSON.stringify(result).includes('test-credential'));
   } finally { globalThis.fetch = originalFetch; }
 });
 test('provider failures return a usable error without exposing provider data', async () => {
   const originalFetch = globalThis.fetch; globalThis.fetch = async () => ({ ok: false });
-  try { const result = await request('POST', { messages: [{ role: 'user', content: 'Hi' }] }, { OPENAI_API_KEY: 'test-credential' }); assert.equal(result.status, 502); assert.ok(result.response.error); assert.ok(!JSON.stringify(result).includes('test-credential')); }
+  try { const result = await request('POST', { messages: [{ role: 'user', content: 'Hi' }] }, { GEMINI_API_KEY: 'test-credential' }); assert.equal(result.status, 502); assert.ok(result.response.error); assert.ok(!JSON.stringify(result).includes('test-credential')); }
   finally { globalThis.fetch = originalFetch; }
 });

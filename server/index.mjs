@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { handleAssistant } from './assistant.mjs';
 
 const root = fileURLToPath(new URL('../dist/', import.meta.url));
-const mime = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.woff2': 'font/woff2' };
+const mime = { '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript', '.wasm': 'application/wasm', '.css': 'text/css', '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.woff2': 'font/woff2' };
 createServer(async (req, res) => {
   const url = new URL(req.url || '/', 'http://localhost');
   if (url.pathname === '/api/assistant') { await handleAssistant(req, res); return; }

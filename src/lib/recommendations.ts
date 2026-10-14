@@ -4,6 +4,10 @@ import type { Country } from '../data/countries';
 export interface Message { role: 'user' | 'assistant'; content: string; suggestions?: string[] }
 export function previewRecommendation(messages: Message[], countries: Country[] = []): Message {
   const latest = messages.filter(m => m.role === 'user').at(-1)?.content.toLowerCase() || '';
+  const greeting = latest.trim().replace(/[.!?,]+/g, '').replace(/\s+/g, ' ');
+  if (/^(hi|hello|hey|hiya|howdy|good morning|good afternoon|good evening)( there| atlas| bot)?$/.test(greeting)) {
+    return { role: 'assistant', content: 'Hi! I\u2019m Atlas, your travel companion. What kind of trip are you dreaming of\u2014a relaxing coast, a city to explore, or an adventure in nature? If you already have a destination in mind, tell me about it.' };
+  }
   const context = messages.filter(m => m.role === 'user').slice(-4).map(m => m.content).join(' ').toLowerCase();
   const named = destinations.find(c => latest.includes(c.name.toLowerCase()));
   if (named) return { role: 'assistant', content: `${named.name} could be a wonderful next chapter. ${named.description}\n\nA good seasonal starting point is ${named.season}. What matters most for your trip: culture, time in nature, or a relaxed pace?`, suggestions: [named.name] };

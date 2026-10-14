@@ -15,6 +15,19 @@ interface Recognition {
 type VoiceWindow = Window & { SpeechRecognition?: new () => Recognition; webkitSpeechRecognition?: new () => Recognition };
 interface Props { onExplore: (name: string) => void; initialPrompt: string; onPromptConsumed: () => void; countries: Country[] }
 
+const preferredVoiceNames = ['aria', 'jenny', 'sonia', 'libby', 'samantha', 'ava', 'serena', 'victoria', 'karen', 'moira', 'tessa', 'google uk english female'];
+function atlasVoice(voices: SpeechSynthesisVoice[]) {
+  const english = voices.filter(voice => voice.lang.toLowerCase().startsWith('en'));
+  return english.sort((a, b) => {
+    const score = (voice: SpeechSynthesisVoice) => {
+      const name = voice.name.toLowerCase();
+      const preferred = preferredVoiceNames.findIndex(candidate => name.includes(candidate));
+      return (preferred < 0 ? 0 : 100 - preferred) + (/natural|neural|online/.test(name) ? 20 : 0) + (voice.lang.toLowerCase() === 'en-us' ? 5 : 0);
+    };
+    return score(b) - score(a);
+  })[0] || voices[0];
+}
+
 export default function Assistant({ onExplore, initialPrompt, onPromptConsumed, countries }: Props) {
   const [messages, setMessages] = useStoredState<Message[]>('worldscope-conversation', []);
   const [input, setInput] = useState('');
@@ -22,18 +35,23 @@ export default function Assistant({ onExplore, initialPrompt, onPromptConsumed, 
   const [busy, setBusy] = useState(false);
   const [listening, setListening] = useState(false);
   const [speaking, setSpeaking] = useState(false);
-  const [voiceReplies, setVoiceReplies] = useState(false);
+  const [voiceReplies, setVoiceReplies] = useState(true);
   const [error, setError] = useState('');
   const end = useRef<HTMLDivElement>(null);
   const orb = useRef<HTMLDivElement>(null);
   const recognition = useRef<Recognition | null>(null);
+  const recognitionStopRequested = useRef(false);
+  const silenceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const audio = useRef<{ stream: MediaStream; context: AudioContext; frame: number } | null>(null);
+  const playback = useRef<{ audio: HTMLAudioElement; url: string } | null>(null);
+  const speechRequest = useRef(0);
   const abort = useRef<AbortController | null>(null);
-  const submitRef = useRef<(text: string) => Promise<void>>(async () => {});
+  const submitRef = useRef<(text: string, speakReply?: boolean) => Promise<void>>(async () => {});
   const mounted = useRef(true);
   const busyRef = useRef(false);
   const consumed = useRef(false);
-  useEffect(() => { mounted.current = true; const controller = new AbortController(); fetch('/api/assistant', { signal: controller.signal }).then(r => r.json()).then(d => setMode(d.mode === 'live' ? 'live' : 'preview')).catch(() => {}); return () => { mounted.current = false; controller.abort(); abort.current?.abort(); recognition.current?.abort(); stopAudio(); window.speechSynthesis?.cancel(); }; }, []);
+  useEffect(() => { mounted.current = true; const controller = new AbortController(); fetch('/api/assistant', { signal: controller.signal }).then(r => r.json()).then(d => setMode(d.mode === 'live' ? 'live' : 'preview')).catch(() => {}); return () => { mounted.current = false; controller.abort(); abort.current?.abort(); if (silenceTimer.current) clearTimeout(silenceTimer.current); recognition.current?.abort(); stopAudio(); stopSpeech(); }; }, []);
+  useEffect(() => { window.speechSynthesis?.getVoices(); }, []);
   useEffect(() => { if (messages.length) end.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }, [messages, busy]);
   useEffect(() => {
     if (initialPrompt && !consumed.current) {
@@ -42,15 +60,42 @@ export default function Assistant({ onExplore, initialPrompt, onPromptConsumed, 
     }
   }, [initialPrompt, onPromptConsumed]);
   function stopAudio() { if (audio.current) { cancelAnimationFrame(audio.current.frame); audio.current.stream.getTracks().forEach(track => track.stop()); void audio.current.context.close(); audio.current = null; } orb.current?.style.setProperty('--voice-level', '0'); }
-  function speak(text: string) {
+  function stopSpeech() {
+    speechRequest.current += 1;
+    window.speechSynthesis?.cancel();
+    if (playback.current) { playback.current.audio.pause(); URL.revokeObjectURL(playback.current.url); playback.current = null; }
+    if (mounted.current) setSpeaking(false);
+  }
+  function browserSpeak(text: string) {
     if (!('speechSynthesis' in window)) { setError('Spoken replies are not available in this browser. You can still read every response.'); return; }
-    window.speechSynthesis.cancel(); const utterance = new SpeechSynthesisUtterance(text); utterance.lang = 'en-US'; utterance.rate = 0.97;
+    const utterance = new SpeechSynthesisUtterance(text); const voice = atlasVoice(window.speechSynthesis.getVoices());
+    if (voice) { utterance.voice = voice; utterance.lang = voice.lang; } else utterance.lang = 'en-US';
+    utterance.rate = 0.9; utterance.pitch = 1.08; utterance.volume = 0.92;
     utterance.onstart = () => { if (mounted.current) setSpeaking(true); }; utterance.onend = utterance.onerror = () => { if (mounted.current) setSpeaking(false); }; window.speechSynthesis.speak(utterance);
   }
-  async function submit(text: string) {
+  async function speak(text: string) {
+    stopSpeech(); setError('');
+    const request = speechRequest.current;
+    try {
+      if (mounted.current) setSpeaking(true);
+      const { generateAtlasSpeech } = await import('../lib/piper');
+      const blob = await generateAtlasSpeech(text);
+      if (!mounted.current || request !== speechRequest.current) return;
+      const url = URL.createObjectURL(blob); const player = new Audio(url); playback.current = { audio: player, url };
+      const finish = () => { if (playback.current?.audio === player) { URL.revokeObjectURL(url); playback.current = null; if (mounted.current) setSpeaking(false); } };
+      player.onended = finish; player.onerror = finish; await player.play();
+      if (mounted.current && request === speechRequest.current && !player.ended) setSpeaking(true);
+    } catch (failure) {
+      if (mounted.current && request === speechRequest.current) {
+        console.warn('Atlas local speech failed:', failure);
+        stopSpeech(); setError('Local Piper voice was unavailable. Using your device voice instead.'); browserSpeak(text);
+      }
+    }
+  }
+  async function submit(text: string, speakReply = false) {
     if (!text.trim() || busyRef.current) return;
     const conversation: Message[] = [...messages, { role: 'user', content: text.trim().slice(0, 2000) }];
-    setMessages(conversation); setInput(''); setError(''); busyRef.current = true; setBusy(true); window.speechSynthesis?.cancel(); setSpeaking(false);
+    setMessages(conversation); setInput(''); setError(''); busyRef.current = true; setBusy(true); stopSpeech();
     abort.current = new AbortController();
     try {
       const response = await fetch('/api/assistant', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ messages: conversation.slice(-20).map(({ role, content }) => ({ role, content })) }), signal: abort.current.signal });
@@ -58,16 +103,18 @@ export default function Assistant({ onExplore, initialPrompt, onPromptConsumed, 
       const data = await response.json();
       const reply: Message = data.mode === 'live' ? { role: 'assistant', content: data.reply, suggestions: destinations.filter(c => data.reply.includes(c.name)).map(c => c.name).slice(0, 3) } : previewRecommendation(conversation, countries);
       if (!mounted.current) return;
-      setMode(data.mode === 'live' ? 'live' : 'preview'); setMessages([...conversation, reply]); if (voiceReplies) speak(reply.content);
+      setMode(data.mode === 'live' ? 'live' : 'preview'); setMessages([...conversation, reply]); if (voiceReplies || speakReply) speak(reply.content);
     } catch (err) { if (mounted.current && !(err instanceof DOMException && err.name === 'AbortError')) { setError(err instanceof Error ? err.message : 'Something went wrong. Please try again.'); setInput(text); } }
     finally { busyRef.current = false; if (mounted.current) setBusy(false); }
   }
   submitRef.current = submit;
   async function toggleVoice() {
-    if (listening) { recognition.current?.stop(); return; }
+    if (listening) { recognitionStopRequested.current = true; if (silenceTimer.current) clearTimeout(silenceTimer.current); recognition.current?.stop(); return; }
+    if (!voiceReplies) setVoiceReplies(true);
+    void import('../lib/piper').then(({ loadPiper }) => loadPiper()).catch(() => {});
     const Constructor = (window as VoiceWindow).SpeechRecognition || (window as VoiceWindow).webkitSpeechRecognition;
     if (!Constructor) { setError('Voice input is not supported in this browser. Try Chrome or Edge, or type your message below.'); return; }
-    window.speechSynthesis?.cancel(); setSpeaking(false); setError('');
+    stopSpeech(); setError('');
     let transcript = '', failed = false;
     try {
       if (!navigator.mediaDevices?.getUserMedia) throw new Error('Microphone access requires localhost or a secure HTTPS connection.');
@@ -76,10 +123,25 @@ export default function Assistant({ onExplore, initialPrompt, onPromptConsumed, 
       const context = new AudioContext(); const analyser = context.createAnalyser(); analyser.fftSize = 256; context.createMediaStreamSource(stream).connect(analyser);
       const samples = new Uint8Array(analyser.frequencyBinCount); audio.current = { stream, context, frame: 0 };
       const animate = () => { if (!audio.current) return; analyser.getByteTimeDomainData(samples); const level = Math.min(1, Math.sqrt(samples.reduce((sum, value) => sum + ((value - 128) / 128) ** 2, 0) / samples.length) * 6); orb.current?.style.setProperty('--voice-level', level.toFixed(3)); audio.current.frame = requestAnimationFrame(animate); }; animate();
-      const recognizer = new Constructor(); recognizer.lang = 'en-US'; recognizer.interimResults = true; recognizer.continuous = false; recognition.current = recognizer;
-      recognizer.onresult = e => { transcript = Array.from({ length: e.results.length }, (_, i) => e.results[i][0].transcript).join(' '); setInput(transcript); };
-      recognizer.onerror = e => { failed = true; setError(e.error === 'not-allowed' ? 'Microphone permission was denied. You can enable it in your browser or type below.' : 'I couldn’t catch that. Try again or type your message.'); };
-      recognizer.onend = () => { stopAudio(); if (mounted.current) { setListening(false); if (transcript.trim() && !failed) void submitRef.current(transcript); } };
+      const recognizer = new Constructor(); recognizer.lang = 'en-US'; recognizer.interimResults = true; recognizer.continuous = true; recognition.current = recognizer; recognitionStopRequested.current = false;
+      const finishListening = () => { recognitionStopRequested.current = true; recognizer.stop(); };
+      recognizer.onresult = e => {
+        transcript = Array.from({ length: e.results.length }, (_, i) => e.results[i][0].transcript).join(' '); setInput(transcript);
+        if (silenceTimer.current) clearTimeout(silenceTimer.current);
+        silenceTimer.current = setTimeout(finishListening, 5000);
+      };
+      recognizer.onerror = e => {
+        if (e.error === 'no-speech' || (e.error === 'aborted' && recognitionStopRequested.current)) return;
+        failed = true; recognitionStopRequested.current = true;
+        setError(e.error === 'not-allowed' ? 'Microphone permission was denied. You can enable it in your browser or type below.' : 'I couldn’t catch that. Try again or type your message.');
+      };
+      recognizer.onend = () => {
+        if (!recognitionStopRequested.current && !failed && mounted.current) {
+          try { recognizer.start(); return; } catch { recognitionStopRequested.current = true; }
+        }
+        if (silenceTimer.current) { clearTimeout(silenceTimer.current); silenceTimer.current = null; }
+        stopAudio(); if (mounted.current) { setListening(false); if (transcript.trim() && !failed) void submitRef.current(transcript, true); }
+      };
       recognizer.start(); setListening(true);
     } catch (err) { stopAudio(); setListening(false); setError(err instanceof Error ? err.message : 'Microphone access was unavailable. Please type your message.'); }
   }
@@ -91,9 +153,9 @@ export default function Assistant({ onExplore, initialPrompt, onPromptConsumed, 
       <div className={`voice-orb-wrap ${state}`} ref={orb}><div className="voice-orbit orbit-a" /><div className="voice-orbit orbit-b" /><div className="voice-orb"><div className="orb-light light-one" /><div className="orb-light light-two" /><div className="orb-light light-three" /><div className="orb-inner" /></div><span className="orb-star star-one">+</span><span className="orb-star star-two">+</span></div>
       <div className="atlas-name">ATLAS <span>YOUR TRAVEL COMPANION</span></div><h2>{listening ? 'I’m listening.' : busy ? 'Finding your somewhere.' : speaking ? 'A little inspiration for you.' : 'Let’s find your somewhere.'}</h2><p>{listening ? 'Tell me what your perfect trip feels like.' : 'A feeling, a place, a wild idea. Start anywhere.'}</p>
       <div className={`voice-wave ${state}`} aria-hidden="true">{Array.from({ length: 23 }, (_, i) => <i key={i} style={{ '--bar-height': `${7 + Math.sin(i * 1.8) ** 2 * 20}px`, '--bar-delay': `${i * .06}s` } as React.CSSProperties} />)}</div>
-      <button className={`voice-main-button ${listening ? 'is-listening' : ''}`} onClick={() => void toggleVoice()} disabled={busy}>{listening ? <MicOff size={17} /> : <Mic size={17} />}{listening ? 'Finish speaking' : 'Talk to Atlas'}</button><span className="voice-hint">{listening ? 'Your microphone is on' : 'Or keep it quiet and type a message'}</span>
+      <button className={`voice-main-button ${listening ? 'is-listening' : ''}`} onClick={() => void toggleVoice()} disabled={busy}>{listening ? <MicOff size={17} /> : <Mic size={17} />}{listening ? 'Finish speaking' : 'Talk to Atlas'}</button><span className="voice-hint">{listening ? 'Waiting for 5 seconds of silence' : 'Or keep it quiet and type a message'}</span>
       <div className="atlas-footnote"><Compass size={15} /><p>Less searching.<br /><strong>More finding your kind of place.</strong></p></div>
-    </section><section className="conversation-panel" aria-label="Conversation with Atlas"><div className="conversation-header"><span><Sparkles size={17} /><strong>Atlas</strong><span className="live-dot" /><small>{state === 'idle' ? 'Here to help' : state}</small></span><div><button className="icon-button" aria-label={voiceReplies ? 'Turn off spoken replies' : 'Turn on spoken replies'} aria-pressed={voiceReplies} onClick={() => { setVoiceReplies(!voiceReplies); if (voiceReplies) { window.speechSynthesis?.cancel(); setSpeaking(false); } }}>{voiceReplies ? <Volume2 size={16} /> : <VolumeX size={16} />}</button><button className="icon-button" aria-label="Start a new conversation" disabled={busy || listening} onClick={() => { setMessages([]); setError(''); setInput(''); window.speechSynthesis?.cancel(); setSpeaking(false); }}><RotateCcw size={14} /></button></div></div>
+    </section><section className="conversation-panel" aria-label="Conversation with Atlas"><div className="conversation-header"><span><Sparkles size={17} /><strong>Atlas</strong><span className="live-dot" /><small>{state === 'idle' ? 'Here to help' : state}</small></span><div><button className="icon-button" aria-label={voiceReplies ? 'Turn off spoken replies' : 'Turn on spoken replies'} aria-pressed={voiceReplies} onClick={() => { const next = !voiceReplies; setVoiceReplies(next); if (next) void import('../lib/piper').then(({ loadPiper }) => loadPiper()).catch(() => {}); else stopSpeech(); }}>{voiceReplies ? <Volume2 size={16} /> : <VolumeX size={16} />}</button><button className="icon-button" aria-label="Start a new conversation" disabled={busy || listening} onClick={() => { setMessages([]); setError(''); setInput(''); stopSpeech(); }}><RotateCcw size={14} /></button></div></div>
       <div className="conversation-messages" role="log" aria-live="polite">
         {!messages.length && <div className="welcome-message"><span className="message-avatar"><Sparkles size={16} /></span><div><span className="message-author">ATLAS</span><h3>The world is full of places that feel like you.</h3><p>Tell me what you’re dreaming of. A quiet coast? A city full of stories? A little adventure?</p><p>We’ll find a good place to start.</p><div className="prompt-grid">{[{ Icon: Leaf, title: 'Somewhere wild', prompt: 'I want a nature-filled adventure with beautiful hikes.' }, { Icon: Waves, title: 'Time to slow down', prompt: 'I want a relaxing trip by the coast.' }, { Icon: Compass, title: 'Culture & good food', prompt: 'Help me find a destination for culture and amazing food.' }, { Icon: Sparkles, title: 'Surprise me', prompt: 'Surprise me with a destination for my next trip.' }].map(({ Icon, title, prompt }) => <button key={title} onClick={() => void submit(prompt)}><Icon size={16} /><span>{title}</span><ArrowUpRight size={12} /></button>)}</div></div></div>}
         {messages.map((message, i) => <div className={`chat-message ${message.role}`} key={i}><span className="message-avatar">{message.role === 'assistant' ? <Sparkles size={14} /> : 'You'}</span><div><span className="message-author">{message.role === 'assistant' ? 'ATLAS' : 'YOU'}</span><p>{message.content}</p>{message.suggestions && <div className="reply-destinations">{message.suggestions.map(name => { const c = destinations.find(d => d.name === name); return c && <button key={name} onClick={() => onExplore(name)}><img src={photo(c.image!, 220)} alt="" /><span><small>{c.region}</small><strong>{name}</strong></span><ArrowUpRight size={14} /></button>; })}</div>}{message.role === 'assistant' && <button className="read-reply text-button" onClick={() => speak(message.content)}><Volume2 size={12} /> Listen to reply</button>}</div></div>)}
