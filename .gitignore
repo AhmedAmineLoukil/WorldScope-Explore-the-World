@@ -10,6 +10,13 @@ lerna-debug.log*
 node_modules
 dist
 dist-ssr
+.env
+.env.*
+!.env.example
+.playwright-mcp/
+.image-cache/
+*-desktop.png
+*-mobile*.png
 *.local
 
 # Editor directories and files
