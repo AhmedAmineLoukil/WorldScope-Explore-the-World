@@ -9,12 +9,13 @@ import { Minus, Plus, RotateCcw, Pause, Play } from 'lucide-react';
 import { countryName } from '../data/countries';
 
 type GeoCountry = Feature<Geometry, { name: string }>;
-interface Props { selectedCountry: string; coordinates: [number, number]; onSelectCountry: (name: string) => void; onCountries: (names: string[]) => void }
+interface VisitedCountry { name: string; coordinates: [number, number] }
+interface Props { selectedCountry: string; coordinates: [number, number]; visitedCountries: VisitedCountry[]; onSelectCountry: (name: string) => void; onCountries: (names: string[]) => void }
 const position = (lat: number, lng: number, radius = 1) => new THREE.Vector3(Math.cos(lat * Math.PI / 180) * Math.cos(lng * Math.PI / 180), Math.sin(lat * Math.PI / 180), -Math.cos(lat * Math.PI / 180) * Math.sin(lng * Math.PI / 180)).multiplyScalar(radius);
 
-export default function WorldMap({ selectedCountry, coordinates, onSelectCountry, onCountries }: Props) {
+export default function WorldMap({ selectedCountry, coordinates, visitedCountries, onSelectCountry, onCountries }: Props) {
   const host = useRef<HTMLDivElement>(null);
-  const api = useRef<{ select: (name: string, coord: [number, number]) => void; zoom: (factor: number) => void; reset: () => void; rotate: (value: boolean) => void } | null>(null);
+  const api = useRef<{ select: (name: string, coord: [number, number]) => void; setVisited: (countries: VisitedCountry[]) => void; zoom: (factor: number) => void; reset: () => void; rotate: (value: boolean) => void } | null>(null);
   const callbacks = useRef({ onSelectCountry, onCountries });
   callbacks.current = { onSelectCountry, onCountries };
   const [error, setError] = useState('');
@@ -77,6 +78,32 @@ export default function WorldMap({ selectedCountry, coordinates, onSelectCountry
         const markerMaterial = new THREE.MeshBasicMaterial({ color: '#ffffff' });
         const marker = new THREE.Mesh(new THREE.SphereGeometry(0.012, 16, 16), markerMaterial);
         marker.position.copy(position(coordinates[0], coordinates[1], 1.016)); scene.add(marker);
+        const visitedMarkerGroup = new THREE.Group();
+        scene.add(visitedMarkerGroup);
+        function setVisitedMarkers(visited: VisitedCountry[]) {
+          while (visitedMarkerGroup.children.length) {
+            const pin = visitedMarkerGroup.children.pop()!;
+            pin.traverse(child => {
+              if (!(child instanceof THREE.Mesh)) return;
+              child.geometry.dispose();
+              const materials = Array.isArray(child.material) ? child.material : [child.material];
+              materials.forEach(item => item.dispose());
+            });
+          }
+          for (const visitedCountry of visited) {
+            const normal = position(visitedCountry.coordinates[0], visitedCountry.coordinates[1]).normalize();
+            const pin = new THREE.Group();
+            const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.0035, 0.006, 0.035, 8), new THREE.MeshBasicMaterial({ color:'#f5f7f8' }));
+            stem.position.y = 0.021;
+            const head = new THREE.Mesh(new THREE.SphereGeometry(0.017, 14, 14), new THREE.MeshBasicMaterial({ color:'#b7f34a' }));
+            head.position.y = 0.047;
+            pin.add(stem, head);
+            pin.position.copy(normal.multiplyScalar(1.004));
+            pin.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), normal.clone().normalize());
+            pin.userData.country = visitedCountry.name;
+            visitedMarkerGroup.add(pin);
+          }
+        }
         const controls = new OrbitControls(camera, renderer.domElement);
         controls.enablePan = false; controls.enableDamping = true; controls.dampingFactor = 0.065;
         controls.minDistance = 2.7; controls.maxDistance = 5.8; controls.autoRotateSpeed = 0.35; controls.rotateSpeed = 0.55;
@@ -108,6 +135,7 @@ export default function WorldMap({ selectedCountry, coordinates, onSelectCountry
         renderer.domElement.addEventListener('pointermove', move); renderer.domElement.addEventListener('pointerleave', leave);
         api.current = {
           select: (name, coord) => { draw(name); marker.position.copy(position(coord[0], coord[1], 1.016)); if (coord[0] !== 0 || coord[1] !== 0) targetPosition = position(coord[0], coord[1], camera.position.length()); },
+          setVisited: setVisitedMarkers,
           zoom: factor => { targetPosition = camera.position.clone().normalize().multiplyScalar(THREE.MathUtils.clamp(camera.position.length() * factor, 2.7, 5.8)); },
           reset: () => { targetPosition = position(25, 110, 4.05); },
           rotate: value => { controls.autoRotate = value; },
@@ -120,13 +148,14 @@ export default function WorldMap({ selectedCountry, coordinates, onSelectCountry
           controls.update(); renderer.render(scene, camera);
         }
         animate(); setReady(true);
-        cleanup = () => { observer.disconnect(); controls.dispose(); renderer.dispose(); geometry.dispose(); material.dispose(); texture.dispose(); atmosphere.geometry.dispose(); atmosphereMaterial.dispose(); marker.geometry.dispose(); markerMaterial.dispose(); renderer.domElement.remove(); api.current = null; };
+        cleanup = () => { observer.disconnect(); controls.dispose(); setVisitedMarkers([]); renderer.dispose(); geometry.dispose(); material.dispose(); texture.dispose(); atmosphere.geometry.dispose(); atmosphereMaterial.dispose(); marker.geometry.dispose(); markerMaterial.dispose(); renderer.domElement.remove(); api.current = null; };
       } catch (err) { if (!disposed) setError(err instanceof Error ? err.message : 'Globe unavailable'); }
     }
     void initialize();
     return () => { disposed = true; controller.abort(); cancelAnimationFrame(frame); cleanup(); };
   }, []);
   useEffect(() => { if (ready) api.current?.select(selectedCountry, coordinates); }, [selectedCountry, coordinates, ready]);
+  useEffect(() => { if (ready) api.current?.setVisited(visitedCountries); }, [visitedCountries, ready]);
   return <div className="globe-stage">
     <div className="globe-orbit orbit-one" /><div className="globe-orbit orbit-two" />
     <div ref={host} className="globe-canvas" />

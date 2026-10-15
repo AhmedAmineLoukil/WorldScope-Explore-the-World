@@ -36,6 +36,10 @@ function App() {
   useEffect(() => { if (toast) { const timeout = setTimeout(() => setToast(''), 3500); return () => clearTimeout(timeout); } }, [toast]);
   const country = destinations.find(c => c.name === selected) || facts.find(c => c.name === selected || (selected === 'Czech Republic' && c.name === 'Czechia')) || { name: selected, code: '', region: 'Country explorer', capital: 'Not available', population: 'Not available', language: 'Not available', currency: 'Not available', lat: 0, lng: 0 };
   const coordinates = useMemo<[number, number]>(() => [country.lat, country.lng], [country.lat, country.lng]);
+  const visitedCountries = useMemo(() => Array.from(new Set(visits.map(visit => visit.country))).flatMap(name => {
+    const match = destinations.find(c => c.name === name) || facts.find(c => c.name === name || (name === 'Czech Republic' && c.name === 'Czechia'));
+    return match ? [{ name, coordinates: [match.lat, match.lng] as [number, number] }] : [];
+  }), [visits, facts]);
   const searchNames = Array.from(new Set([...allNames, ...facts.map(c => c.name)])).filter(name => name.toLowerCase().includes(query.trim().toLowerCase())).sort((a, b) => {
     const term = query.trim().toLowerCase();
     const rank = (name: string) => name.toLowerCase() === term ? 0 : name.toLowerCase().startsWith(term) ? 1 : 2;
@@ -60,7 +64,7 @@ function App() {
         </div>
         <div className="discover-layout"><div className="globe-column">
           <div className="explorer-topline"><span><span className="live-dot" /> EXPLORER MODE</span><button className="text-button" onClick={() => { const options = destinations.filter(c => c.name !== selected); setSelected(options[Math.floor(Math.random() * options.length)].name); }}><Shuffle size={13} /> Surprise me <ArrowUpRight size={13} /></button></div>
-          <WorldMap selectedCountry={selected} coordinates={coordinates} onSelectCountry={setSelected} onCountries={setAllNames} />
+          <WorldMap selectedCountry={selected} coordinates={coordinates} visitedCountries={visitedCountries} onSelectCountry={setSelected} onCountries={setAllNames} />
           <div className="explorer-bottomline"><span><Globe2 size={14} /> One planet. Endless stories.</span><span>EXPLORE AT YOUR OWN PACE <ArrowUpRight size={12} /></span></div>
         </div><CountryPanel country={country} saved={wishlist.includes(selected)} onSave={toggleSave} onAsk={() => { setAssistantPrompt(`Tell me about travelling to ${selected}.`); setSection('assistant'); }} /></div>
         <section className="inspiration-section" aria-label="Destination inspiration"><div className="inspiration-heading"><div><span className="eyebrow">A LITTLE INSPIRATION</span><h2>Places to spark your wanderlust</h2></div><span className="curated-label">Handpicked for the curious <Sparkles size={13} /></span></div>
